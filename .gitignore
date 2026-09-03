@@ -24,3 +24,5 @@ results/
 # OS files
 .DS_Store
 Thumbs.db
+# Local GNSS-IR executables
+tools/
