@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,6 +13,9 @@ from scipy.signal import lombscargle
 # =========================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from gnss_ir.processing import process_gnss_ir_arc_from_files
 
 
 # =========================================================
@@ -1258,6 +1262,69 @@ print(
 print(
     "Optimizer message:",
     optimization.message
+)
+
+
+# =========================================================
+# REFACTORED IMPLEMENTATION REGRESSION CHECK
+# =========================================================
+
+refactored_result = process_gnss_ir_arc_from_files(
+    snr_file=SNR_FILE,
+    arc_inventory_file=ARC_INVENTORY_FILE,
+    satellite_number=satellite_number,
+    arc_type=arc_type,
+    arc_number=arc_number,
+    station="p041",
+    year=2016,
+    doy=1,
+)
+
+if refactored_result.processing_status != "success":
+    raise RuntimeError(
+        refactored_result.failure_reason
+    )
+
+print()
+print("REFACTORED IMPLEMENTATION CHECK")
+print("-------------------------------")
+
+print(
+    "LSP height difference:",
+    f"{refactored_result.lsp_reflector_height_m - lsp_height:.12e}",
+    "m"
+)
+
+print(
+    "LS height difference:",
+    f"{refactored_result.ls_reflector_height_m - ls_height:.12e}",
+    "m"
+)
+
+print(
+    "Amplitude difference:",
+    f"{refactored_result.ls_amplitude - ls_amplitude:.12e}"
+)
+
+print(
+    "Phase difference:",
+    f"{refactored_result.ls_phase - ls_phase:.12e}",
+    "rad"
+)
+
+print(
+    "RMSE difference:",
+    f"{refactored_result.ls_rmse - ls_rmse:.12e}"
+)
+
+print(
+    "R-squared difference:",
+    f"{refactored_result.ls_r_squared - ls_r_squared:.12e}"
+)
+
+print(
+    "SSE difference:",
+    f"{refactored_result.ls_sse - ls_sse:.12e}"
 )
 
 
