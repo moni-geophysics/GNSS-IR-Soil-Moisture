@@ -7,13 +7,18 @@ P041 DOY 001 single-arc workflow.
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
+from numpy.polynomial import Polynomial
 from scipy.optimize import minimize_scalar
 from scipy.signal import lombscargle
 
+from gnss_ir.refraction import (
+    bennett_refraction_correction,
+    get_gpt2_refraction_parameters,
+)
 from gnss_ir.snr import read_snr_file
 
 
@@ -77,27 +82,36 @@ class GnssIrArcResult:
     number_of_observations: int
     elevation_min_deg: Optional[float]
     elevation_max_deg: Optional[float]
-    azimuth_min_deg: Optional[float]
-    azimuth_max_deg: Optional[float]
-    azimuth_mean_deg: Optional[float]
-    snr_representation: str
-    polynomial_degree: int
-    wavelength_m: float
-    lsp_reflector_height_m: Optional[float]
-    lsp_frequency: Optional[float]
-    lsp_peak_power: Optional[float]
-    ls_reflector_height_m: Optional[float]
-    ls_frequency: Optional[float]
-    ls_amplitude: Optional[float]
-    ls_phase: Optional[float]
-    ls_rmse: Optional[float]
-    ls_r_squared: Optional[float]
-    ls_sse: Optional[float]
-    lsp_sse: Optional[float]
-    sse_reduction: Optional[float]
-    lsp_vs_ls_height_difference_m: Optional[float]
-    lsp_vs_ls_absolute_height_difference_m: Optional[float]
-    processing_status: str
+    elevation_raw_min_deg: Optional[float] = None
+    elevation_raw_max_deg: Optional[float] = None
+    azimuth_min_deg: Optional[float] = None
+    azimuth_max_deg: Optional[float] = None
+    azimuth_mean_deg: Optional[float] = None
+    refraction_applied: bool = False
+    pressure_hpa: Optional[float] = None
+    temperature_c: Optional[float] = None
+    pele_min_deg: Optional[float] = None
+    pele_max_deg: Optional[float] = None
+    e1_deg: Optional[float] = None
+    e2_deg: Optional[float] = None
+    snr_representation: str = "linear amplitude"
+    polynomial_degree: int = 4
+    wavelength_m: float = GPS_L1_WAVELENGTH_M
+    lsp_reflector_height_m: Optional[float] = None
+    lsp_frequency: Optional[float] = None
+    lsp_peak_power: Optional[float] = None
+    ls_reflector_height_m: Optional[float] = None
+    ls_frequency: Optional[float] = None
+    ls_amplitude: Optional[float] = None
+    ls_phase: Optional[float] = None
+    ls_rmse: Optional[float] = None
+    ls_r_squared: Optional[float] = None
+    ls_sse: Optional[float] = None
+    lsp_sse: Optional[float] = None
+    sse_reduction: Optional[float] = None
+    lsp_vs_ls_height_difference_m: Optional[float] = None
+    lsp_vs_ls_absolute_height_difference_m: Optional[float] = None
+    processing_status: str = "success"
     failure_reason: Optional[str] = None
     x: Optional[np.ndarray] = field(default=None, repr=False)
     snr_linear: Optional[np.ndarray] = field(default=None, repr=False)
@@ -147,40 +161,58 @@ def dbhz_to_linear_amplitude(snr_db):
     return 10 ** (np.asarray(snr_db, dtype=float) / 20.0)
 
 
-def add_sine_elevation(data):
+def add_sine_elevation(data, elevation_column="elevation_deg"):
     """
     Add sin(elevation) to a copy of an SNR observation DataFrame.
     """
 
     data = data.copy()
-    data["sin_elevation"] = np.sin(np.deg2rad(data["elevation_deg"]))
+    data["sin_elevation"] = np.sin(np.deg2rad(data[elevation_column]))
     return data
 
 
 def detrend_polynomial(
     x,
     snr_linear,
-    polynomial_degree=2,
+    polynomial_degree=4,
+    x_fit=None,
+    snr_linear_fit=None,
     remove_mean=True,
 ):
     """
     Remove a polynomial trend from linear SNR observations.
+
+    Parameters
+    ----------
+    x : array_like
+        Independent variable coordinates for evaluating and subtracting the trend.
+    snr_linear : array_like
+        Linear SNR values corresponding to `x`.
+    polynomial_degree : int, default=4
+        Degree of the detrending polynomial.
+    x_fit : array_like, optional
+        Independent variable coordinates used to fit the polynomial (e.g. over pele).
+        If None, `x` is used for fitting.
+    snr_linear_fit : array_like, optional
+        Linear SNR values corresponding to `x_fit`.
+        If None, `snr_linear` is used for fitting.
+    remove_mean : bool, default=True
+        Whether to subtract the mean of the detrended residual.
     """
 
     x = np.asarray(x, dtype=float)
     snr_linear = np.asarray(snr_linear, dtype=float)
 
-    coefficients = np.polyfit(
-        x,
-        snr_linear,
-        polynomial_degree,
-    )
+    if x_fit is not None and snr_linear_fit is not None:
+        fit_x = np.asarray(x_fit, dtype=float)
+        fit_y = np.asarray(snr_linear_fit, dtype=float)
+    else:
+        fit_x = x
+        fit_y = snr_linear
 
-    trend_linear = np.polyval(
-        coefficients,
-        x,
-    )
-
+    # Use numpy Polynomial.fit for well-conditioned scaling
+    poly = Polynomial.fit(fit_x, fit_y, deg=polynomial_degree)
+    trend_linear = poly(x)
     detrended_linear = snr_linear - trend_linear
 
     if remove_mean:
@@ -188,10 +220,11 @@ def detrend_polynomial(
 
     return DetrendingResult(
         polynomial_degree=polynomial_degree,
-        coefficients=coefficients,
+        coefficients=poly.convert().coef,
         trend_linear=trend_linear,
         detrended_linear=detrended_linear,
     )
+
 
 
 def compute_lomb_scargle_reflector_height(
@@ -391,9 +424,12 @@ def select_arc_from_inventory(
     arc_type,
     arc_number,
     snr_column="S1",
+    buffer_seconds=1800.0,
 ):
     """
     Select one arc from raw SNR data using an arc-inventory row.
+    Extracts the contiguous satellite track containing the arc so that
+    extended fitting windows (such as pele=[5, 30]) have complete observation support.
     """
 
     selected_arc = arc_inventory[
@@ -408,30 +444,46 @@ def select_arc_from_inventory(
     arc = selected_arc.iloc[0]
 
     sat = snr_data[snr_data["satellite"] == satellite_number].copy()
-
-    sat = sat[
-        (sat["seconds_of_day"] >= arc["start_seconds"])
-        & (sat["seconds_of_day"] <= arc["end_seconds"])
-    ].copy()
-
     sat = sat.sort_values("seconds_of_day").reset_index(drop=True)
-
-    if arc_type == "rising":
-        sat = sat[sat["elevation_rate"] > 0].copy()
-    elif arc_type == "setting":
-        sat = sat[sat["elevation_rate"] < 0].copy()
 
     sat = sat[
         np.isfinite(sat[snr_column])
         & (sat[snr_column] > 0)
     ].copy()
 
-    sat = sat.reset_index(drop=True)
+    # Extract the contiguous pass overlapping the inventory arc
+    time_mask = (sat["seconds_of_day"] >= arc["start_seconds"] - buffer_seconds) & (
+        sat["seconds_of_day"] <= arc["end_seconds"] + buffer_seconds
+    )
+    sat = sat[time_mask].copy().reset_index(drop=True)
+
+    if not sat.empty:
+        gaps = sat["seconds_of_day"].diff() > 300.0
+        clusters = gaps.cumsum()
+        mid_time = (arc["start_seconds"] + arc["end_seconds"]) / 2.0
+        closest_idx = (sat["seconds_of_day"] - mid_time).abs().argmin()
+        target_cluster = clusters.iloc[closest_idx]
+        sat = sat[clusters == target_cluster].copy().reset_index(drop=True)
+
+    # Direction filtering (support files where elevation_rate column is zero or unpopulated)
+    if not sat.empty:
+        if "elevation_rate" not in sat.columns or sat["elevation_rate"].abs().max() == 0:
+            dt = sat["seconds_of_day"].diff()
+            de = sat["elevation_deg"].diff()
+            edot = (de / dt).bfill()
+        else:
+            edot = sat["elevation_rate"]
+
+        if arc_type == "rising":
+            sat = sat[edot >= 0].copy()
+        elif arc_type == "setting":
+            sat = sat[edot <= 0].copy()
 
     if sat.empty:
         raise ValueError("No valid SNR observations remain.")
 
     return arc, sat
+
 
 
 def process_gnss_ir_arc(
@@ -444,15 +496,23 @@ def process_gnss_ir_arc(
     year=None,
     doy=None,
     snr_column="S1",
-    polynomial_degree=2,
+    polynomial_degree=4,
     wavelength_m=GPS_L1_WAVELENGTH_M,
-    minimum_height_m=0.1,
-    maximum_height_m=5.0,
+    minimum_height_m=0.5,
+    maximum_height_m=8.0,
     number_of_heights=5000,
     number_of_search_heights=5000,
+    refraction=True,
+    pressure_hpa=None,
+    temperature_c=None,
+    station_config=None,
+    pele=(5.0, 30.0),
+    e1=5.0,
+    e2=25.0,
 ):
     """
-    Process one GNSS-IR arc and return a structured result.
+    Process one GNSS-IR arc with optional atmospheric refraction, separate
+    fitting (pele) and analysis (e1, e2) windows, and return a structured result.
     """
 
     try:
@@ -465,23 +525,109 @@ def process_gnss_ir_arc(
             snr_column=snr_column,
         )
 
-        sat = add_sine_elevation(sat)
-        sat = sat.sort_values("sin_elevation").reset_index(drop=True)
+        # Preserve raw elevation
+        sat["elevation_raw_deg"] = sat["elevation_deg"].copy()
+        refraction_applied = False
 
-        x = sat["sin_elevation"].to_numpy()
-        snr_db = sat[snr_column].to_numpy()
-        snr_linear = dbhz_to_linear_amplitude(snr_db)
+        # Apply atmospheric refraction if enabled
+        if refraction:
+            p_val = pressure_hpa
+            t_val = temperature_c
+
+            if p_val is None or t_val is None:
+                # Attempt to retrieve via station_config or standard file path
+                cfg = station_config
+                if cfg is None and station is not None:
+                    candidates = [
+                        Path(__file__).resolve().parent.parent.parent
+                        / "data" / "raw" / "gnss" / "input" / station.lower() / f"{station.lower()}.json",
+                        Path(__file__).resolve().parent.parent.parent
+                        / "data" / "raw" / "gnss" / "input" / f"{station.lower()}.json",
+                    ]
+                    for candidate in candidates:
+                        if candidate.exists():
+                            cfg = candidate
+                            break
+
+                if cfg is not None and year is not None and doy is not None:
+                    p_val, t_val = get_gpt2_refraction_parameters(cfg, year, doy)
+
+            if p_val is not None and t_val is not None:
+                # Bennett correction is physically valid for positive elevations (E > 0°).
+                # Buffers may include below-horizon (E <= 0°) points which must be masked
+                # rather than failing the valid arc.
+                raw_el = sat["elevation_raw_deg"].to_numpy()
+                positive_mask = np.isfinite(raw_el) & (raw_el > 0.0)
+                refr_el = np.full_like(raw_el, np.nan, dtype=float)
+                if np.any(positive_mask):
+                    refr_el[positive_mask] = bennett_refraction_correction(
+                        raw_el[positive_mask],
+                        pressure_hpa=p_val,
+                        temperature_c=t_val,
+                    )
+                sat["elevation_refr_deg"] = refr_el
+                sat["elevation_deg"] = sat["elevation_refr_deg"]
+                refraction_applied = True
+                pressure_hpa = p_val
+                temperature_c = t_val
+            else:
+                raise ValueError(
+                    f"Refraction correction was requested (refraction=True), but atmospheric parameters "
+                    f"(pressure, temperature) could not be retrieved for station='{station}', year={year}, doy={doy}."
+                )
+        else:
+            sat["elevation_refr_deg"] = sat["elevation_raw_deg"]
+
+        # Drop any non-finite elevation observations (e.g. masked sub-horizon buffer points)
+        # before fitting and analysis window filtering
+        sat = sat[np.isfinite(sat["elevation_deg"])].copy()
+        if sat.empty:
+            raise ValueError("No valid positive elevation observations remain in arc.")
+
+        # 1. Filter fitting window over pele (e.g. 5° to 30°)
+        sat_pele = sat[
+            (sat["elevation_deg"] >= pele[0]) & (sat["elevation_deg"] <= pele[1])
+        ].copy()
+        if sat_pele.empty:
+            raise ValueError(
+                f"No observations remain in fitting window pele=[{pele[0]}, {pele[1]}]."
+            )
+
+        # 2. Filter analysis window over [e1, e2] (e.g. 5° to 25°)
+        sat_analysis = sat_pele[
+            (sat_pele["elevation_deg"] >= e1) & (sat_pele["elevation_deg"] <= e2)
+        ].copy()
+        if sat_analysis.empty:
+            raise ValueError(
+                f"No observations remain in spectral analysis window [{e1}, {e2}]."
+            )
+
+        # 3. Detrending (fit on pele, evaluate on analysis window)
+        fit_ele = sat_pele["elevation_deg"].to_numpy()
+        fit_snr = dbhz_to_linear_amplitude(sat_pele[snr_column].to_numpy())
+        eval_ele = sat_analysis["elevation_deg"].to_numpy()
+        eval_snr = dbhz_to_linear_amplitude(sat_analysis[snr_column].to_numpy())
 
         detrending = detrend_polynomial(
-            x,
-            snr_linear,
+            x=eval_ele,
+            snr_linear=eval_snr,
             polynomial_degree=polynomial_degree,
+            x_fit=fit_ele,
+            snr_linear_fit=fit_snr,
             remove_mean=True,
         )
 
+        # 4. Geometry and spectral estimation
+        sat_analysis = add_sine_elevation(sat_analysis, elevation_column="elevation_deg")
+        sat_analysis = sat_analysis.sort_values("sin_elevation").reset_index(drop=True)
+
+        x = sat_analysis["sin_elevation"].to_numpy()
+        snr_linear = eval_snr
+        detrended_linear = detrending.detrended_linear
+
         lsp = compute_lomb_scargle_reflector_height(
             x,
-            detrending.detrended_linear,
+            detrended_linear,
             wavelength_m=wavelength_m,
             minimum_height_m=minimum_height_m,
             maximum_height_m=maximum_height_m,
@@ -490,7 +636,7 @@ def process_gnss_ir_arc(
 
         height_search = fit_reflector_height_least_squares(
             x,
-            detrending.detrended_linear,
+            detrended_linear,
             wavelength_m=wavelength_m,
             minimum_height_m=minimum_height_m,
             maximum_height_m=maximum_height_m,
@@ -500,7 +646,7 @@ def process_gnss_ir_arc(
         lsp_fit = fit_fixed_height(
             lsp.lsp_reflector_height_m,
             x,
-            detrending.detrended_linear,
+            detrended_linear,
             wavelength_m=wavelength_m,
         )
 
@@ -519,12 +665,21 @@ def process_gnss_ir_arc(
             arc_type=arc_type,
             start_seconds=float(arc["start_seconds"]),
             end_seconds=float(arc["end_seconds"]),
-            number_of_observations=len(sat),
-            elevation_min_deg=float(sat["elevation_deg"].min()),
-            elevation_max_deg=float(sat["elevation_deg"].max()),
-            azimuth_min_deg=float(sat["azimuth_deg"].min()),
-            azimuth_max_deg=float(sat["azimuth_deg"].max()),
-            azimuth_mean_deg=float(sat["azimuth_deg"].mean()),
+            number_of_observations=len(sat_analysis),
+            elevation_min_deg=float(sat_analysis["elevation_deg"].min()),
+            elevation_max_deg=float(sat_analysis["elevation_deg"].max()),
+            elevation_raw_min_deg=float(sat_analysis["elevation_raw_deg"].min()),
+            elevation_raw_max_deg=float(sat_analysis["elevation_raw_deg"].max()),
+            azimuth_min_deg=float(sat_analysis["azimuth_deg"].min()),
+            azimuth_max_deg=float(sat_analysis["azimuth_deg"].max()),
+            azimuth_mean_deg=float(sat_analysis["azimuth_deg"].mean()),
+            refraction_applied=refraction_applied,
+            pressure_hpa=pressure_hpa,
+            temperature_c=temperature_c,
+            pele_min_deg=float(pele[0]),
+            pele_max_deg=float(pele[1]),
+            e1_deg=float(e1),
+            e2_deg=float(e2),
             snr_representation="linear amplitude",
             polynomial_degree=polynomial_degree,
             wavelength_m=wavelength_m,
@@ -546,14 +701,14 @@ def process_gnss_ir_arc(
             failure_reason=None,
             x=x,
             snr_linear=snr_linear,
-            detrended_linear=detrending.detrended_linear,
+            detrended_linear=detrended_linear,
             fitted_signal=ls_fit.fitted,
             residuals=ls_fit.residual,
             lsp_reflector_heights=lsp.reflector_heights,
             lsp_power=lsp.power,
             height_grid=height_search.height_grid,
             sse_values=height_search.sse_values,
-            arc_observations=sat,
+            arc_observations=sat_analysis,
         )
 
     except Exception as exc:
@@ -569,9 +724,18 @@ def process_gnss_ir_arc(
             number_of_observations=0,
             elevation_min_deg=None,
             elevation_max_deg=None,
+            elevation_raw_min_deg=None,
+            elevation_raw_max_deg=None,
             azimuth_min_deg=None,
             azimuth_max_deg=None,
             azimuth_mean_deg=None,
+            refraction_applied=False,
+            pressure_hpa=pressure_hpa,
+            temperature_c=temperature_c,
+            pele_min_deg=float(pele[0]) if pele else None,
+            pele_max_deg=float(pele[1]) if pele else None,
+            e1_deg=float(e1) if e1 is not None else None,
+            e2_deg=float(e2) if e2 is not None else None,
             snr_representation="linear amplitude",
             polynomial_degree=polynomial_degree,
             wavelength_m=wavelength_m,
@@ -603,6 +767,7 @@ def process_gnss_ir_arc_from_files(
     station=None,
     year=None,
     doy=None,
+    station_config_file=None,
     **kwargs,
 ):
     """
@@ -621,5 +786,7 @@ def process_gnss_ir_arc_from_files(
         station=station,
         year=year,
         doy=doy,
+        station_config=station_config_file,
         **kwargs,
     )
+

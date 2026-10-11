@@ -37,23 +37,53 @@ def format_doy(doy: int) -> str:
     return f"{doy:03d}"
 
 
-def default_snr_file(project_root: Path, station: str, year: int, doy: int) -> Path:
-    """Build the current project SNR filename convention."""
+def default_snr_file(
+    project_root: Path,
+    station: str,
+    year: int,
+    doy: int,
+    snr_dir: Optional[Path] = None,
+) -> Path:
+    """
+    Build the SNR filepath with support for compressed (.gz), custom directory,
+    and archive root environment variables (GNSS_SNR_ROOT or REFL_CODE).
+    """
+    import os
 
     station = station.lower()
     doy_text = format_doy(doy)
     year_two_digits = str(year)[-2:]
+    fname_raw = f"{station}{doy_text}0.{year_two_digits}.snr66"
+    fname_gz = f"{station}{doy_text}0.{year_two_digits}.snr66.gz"
 
-    return (
-        project_root
-        / "data"
-        / "raw"
-        / "gnss"
-        / str(year)
-        / "snr"
-        / station
-        / f"{station}{doy_text}0.{year_two_digits}.snr66"
-    )
+    search_dirs = []
+
+    # 1. Explicit directory argument
+    if snr_dir is not None:
+        search_dirs.append(Path(snr_dir))
+
+    # 2. Standard local repository raw gnss directory
+    local_dir = project_root / "data" / "raw" / "gnss" / str(year) / "snr" / station
+    search_dirs.append(local_dir)
+
+    # 3. Archive root environment variable (e.g. GNSS_SNR_ROOT or REFL_CODE)
+    env_root = os.environ.get("GNSS_SNR_ROOT") or os.environ.get("REFL_CODE")
+    if env_root:
+        env_path = Path(env_root)
+        search_dirs.append(env_path / str(year) / "snr" / station)
+        search_dirs.append(env_path / "snr" / station)
+        search_dirs.append(env_path / station)
+        search_dirs.append(env_path)
+
+    for d in search_dirs:
+        raw_p = d / fname_raw
+        if raw_p.exists():
+            return raw_p
+        gz_p = d / fname_gz
+        if gz_p.exists():
+            return gz_p
+
+    return local_dir / fname_raw
 
 
 def default_arc_inventory_file(project_root: Path, station: str, doy: int) -> Path:
@@ -113,6 +143,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Optional explicit path to the daily SNR file.",
+    )
+    parser.add_argument(
+        "--snr-dir",
+        type=Path,
+        default=None,
+        help="Optional path to directory containing daily SNR files.",
     )
     parser.add_argument(
         "--arc-inventory-file",
@@ -262,6 +298,7 @@ def main() -> None:
         station,
         year,
         doy,
+        snr_dir=args.snr_dir,
     )
     arc_inventory_file = args.arc_inventory_file or default_arc_inventory_file(
         PROJECT_ROOT,
