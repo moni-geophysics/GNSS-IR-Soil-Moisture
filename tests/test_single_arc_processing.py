@@ -286,5 +286,70 @@ def test_genuine_out_of_band_window_fails_cleanly():
     assert "No observations remain in fitting window" in result.failure_reason
 
 
+def test_compute_normalized_amplitude_empirical_unit():
+    """
+    Test compute_normalized_amplitude_empirical for valid cases, invalid denominators,
+    zero/negative values, non-finite values, and empty inputs.
+    """
+    from gnss_ir.processing import compute_normalized_amplitude_empirical
+
+    # 1. Valid inputs: alpha = A_LS / mean(P)
+    bg = np.array([50.0, 100.0, 150.0])  # mean = 100.0
+    res = compute_normalized_amplitude_empirical(ls_amplitude=10.0, polynomial_background=bg)
+    assert res == pytest.approx(0.10)
+
+    # 2. Non-finite or missing ls_amplitude
+    assert compute_normalized_amplitude_empirical(None, bg) is None
+    assert compute_normalized_amplitude_empirical(np.nan, bg) is None
+    assert compute_normalized_amplitude_empirical(np.inf, bg) is None
+
+    # 3. Non-finite or empty polynomial background
+    assert compute_normalized_amplitude_empirical(10.0, np.array([])) is None
+    assert compute_normalized_amplitude_empirical(10.0, None) is None
+    assert compute_normalized_amplitude_empirical(10.0, np.array([50.0, np.nan, 100.0])) is None
+
+    # 4. Zero denominator
+    bg_zero = np.array([0.0, 0.0, 0.0])
+    assert compute_normalized_amplitude_empirical(10.0, bg_zero) is None
+
+    # 5. Negative denominator
+    bg_neg = np.array([-5.0, -15.0])
+    assert compute_normalized_amplitude_empirical(10.0, bg_neg) is None
+
+
+def test_normalized_amplitude_empirical_p041_doy001_prn1():
+    """
+    Verify normalized_amplitude_empirical on standard P041 DOY 001 PRN 1 rising arc.
+    Ensures shared sample window, identical observation count, and numerical consistency.
+    """
+    result = process_gnss_ir_arc_from_files(
+        snr_file=SNR_FILE,
+        arc_inventory_file=ARC_INVENTORY_FILE,
+        satellite_number=1,
+        arc_type="rising",
+        arc_number=3,
+        station="p041",
+        year=2016,
+        doy=1,
+        refraction=True,
+        pressure_hpa=824.934,
+        temperature_c=11.523,
+    )
+
+    assert result.processing_status == "success"
+    assert result.normalized_amplitude_empirical is not None
+
+    # Check exact value matches A_LS / mean(P(theta)) on the shared 216 samples
+    assert result.number_of_observations == 216
+    assert result.ls_amplitude == pytest.approx(8.1373, abs=1e-3)
+    # Mean background is ~95.7748 -> alpha_arc ~ 0.08496
+    assert result.normalized_amplitude_empirical == pytest.approx(0.084963, abs=1e-5)
+
+    # Ensure field is present in to_dict output
+    row = result.to_dict()
+    assert "normalized_amplitude_empirical" in row
+    assert row["normalized_amplitude_empirical"] == pytest.approx(0.084963, abs=1e-5)
+
+
 
 

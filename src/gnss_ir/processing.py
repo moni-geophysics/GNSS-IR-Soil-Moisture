@@ -103,6 +103,7 @@ class GnssIrArcResult:
     ls_reflector_height_m: Optional[float] = None
     ls_frequency: Optional[float] = None
     ls_amplitude: Optional[float] = None
+    normalized_amplitude_empirical: Optional[float] = None
     ls_phase: Optional[float] = None
     ls_rmse: Optional[float] = None
     ls_r_squared: Optional[float] = None
@@ -224,6 +225,50 @@ def detrend_polynomial(
         trend_linear=trend_linear,
         detrended_linear=detrended_linear,
     )
+
+
+def compute_normalized_amplitude_empirical(
+    ls_amplitude: Optional[float],
+    polynomial_background: np.ndarray,
+) -> Optional[float]:
+    """
+    Calculate the empirical candidate feature alpha_arc = A_LS / mean(P(theta)).
+
+    Parameters
+    ----------
+    ls_amplitude : float, optional
+        Fitted sinusoidal oscillation amplitude (A_LS) from least-squares fit.
+    polynomial_background : np.ndarray
+        Polynomial background trend P(theta_i) evaluated at the identical samples
+        belonging to the shared analysis window.
+
+    Returns
+    -------
+    float or None
+        alpha_arc = A_LS / mean(P(theta)) if valid, finite, and strictly positive denominator;
+        None otherwise.
+
+    Notes
+    -----
+    This feature is explicitly labeled as an empirical normalized-amplitude candidate feature.
+    It is NOT a physical reflection coefficient or dielectric retrieval.
+    """
+    if ls_amplitude is None or not np.isfinite(ls_amplitude):
+        return None
+
+    if polynomial_background is None or len(polynomial_background) == 0:
+        return None
+
+    bg = np.asarray(polynomial_background, dtype=float)
+    if not np.all(np.isfinite(bg)):
+        return None
+
+    mean_p = float(np.mean(bg))
+    # Denominator must be strictly positive and finite
+    if not np.isfinite(mean_p) or mean_p <= 0.0:
+        return None
+
+    return float(ls_amplitude / mean_p)
 
 
 
@@ -656,6 +701,12 @@ def process_gnss_ir_arc(
             - lsp.lsp_reflector_height_m
         )
 
+        # Compute empirical normalized amplitude feature using identical shared analysis samples
+        norm_amp_emp = compute_normalized_amplitude_empirical(
+            ls_amplitude=ls_fit.amplitude,
+            polynomial_background=detrending.trend_linear,
+        )
+
         return GnssIrArcResult(
             station=station,
             year=year,
@@ -689,6 +740,7 @@ def process_gnss_ir_arc(
             ls_reflector_height_m=ls_fit.reflector_height_m,
             ls_frequency=ls_fit.frequency,
             ls_amplitude=ls_fit.amplitude,
+            normalized_amplitude_empirical=norm_amp_emp,
             ls_phase=ls_fit.phase,
             ls_rmse=ls_fit.rmse,
             ls_r_squared=ls_fit.r_squared,
@@ -745,6 +797,7 @@ def process_gnss_ir_arc(
             ls_reflector_height_m=None,
             ls_frequency=None,
             ls_amplitude=None,
+            normalized_amplitude_empirical=None,
             ls_phase=None,
             ls_rmse=None,
             ls_r_squared=None,

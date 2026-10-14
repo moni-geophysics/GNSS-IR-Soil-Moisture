@@ -1,0 +1,12 @@
+# Core Runtime Dependencies
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.10.0
+scikit-learn>=1.3.0
+
+# Testing & Verification
+pytest>=7.0.0
+
+# Optional Dependencies:
+# gnssrefl (e.g., gnssrefl>=4.2.0) is optional and only needed for the
+# optional atmospheric-refraction functionality in src/gnss_ir/refraction.py.

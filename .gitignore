@@ -26,3 +26,6 @@ results/
 Thumbs.db
 # Local GNSS-IR executables
 tools/
+
+# Scratch and local experimental outputs
+scratch/

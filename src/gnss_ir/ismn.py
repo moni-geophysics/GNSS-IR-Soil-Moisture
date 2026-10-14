@@ -6,14 +6,19 @@ from pathlib import Path
 import pandas as pd
 
 
-def read_ismn_stm(file_path):
+import io
+import zipfile
+from typing import Union
+
+
+def read_ismn_stm(file_or_stream):
     """
-    Read an ISMN .stm soil-moisture file.
+    Read an ISMN .stm soil-moisture file from a path or file-like stream.
 
     Parameters
     ----------
-    file_path : str or Path
-        Path to the ISMN .stm file.
+    file_or_stream : str, Path, or file-like object
+        Path to the ISMN .stm file, or an open file-like stream.
 
     Returns
     -------
@@ -24,16 +29,18 @@ def read_ismn_stm(file_path):
         Time series of soil-moisture measurements and quality flags.
     """
 
-    file_path = Path(file_path)
-
-    if not file_path.exists():
-        raise FileNotFoundError(
-            f"ISMN file not found: {file_path}"
-        )
-
-    # Read all lines from the file
-    with open(file_path, "r", encoding="utf-8") as file:
-        lines = file.readlines()
+    if hasattr(file_or_stream, "readlines"):
+        lines = file_or_stream.readlines()
+        if lines and isinstance(lines[0], bytes):
+            lines = [l.decode("utf-8", errors="replace") for l in lines]
+    else:
+        file_path = Path(file_or_stream)
+        if not file_path.exists():
+            raise FileNotFoundError(
+                f"ISMN file not found: {file_path}"
+            )
+        with open(file_path, "r", encoding="utf-8") as file:
+            lines = file.readlines()
 
     # ---------------------------------------------------------
     # 1. Read the header
