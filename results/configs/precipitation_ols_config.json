@@ -1,0 +1,39 @@
+{
+    "model_name": "Precipitation-Based Soil-Moisture Baseline (OLS API)",
+    "paradigm": "Empirical Baseline",
+    "station": "P041",
+    "target_variable": "cosmos_sm_median",
+    "target_units": "m^3/m^3",
+    "split_protocol": "Chronological 80/20 holdout",
+    "train_period": {
+        "start": "2016-01-04",
+        "end": "2016-10-06",
+        "total_dates": 252,
+        "clean_fitted_dates": 242
+    },
+    "test_period": {
+        "start": "2016-10-07",
+        "end": "2016-12-31",
+        "n_dates": 63
+    },
+    "features": [
+        "p_daily",
+        "p_3d",
+        "p_7d"
+    ],
+    "parameters": {
+        "intercept": 0.1264607818075949,
+        "coefficients": {
+            "p_daily": 0.00544387449412258,
+            "p_3d": -0.00287848574044946,
+            "p_7d": 0.00288898198656683
+        }
+    },
+    "test_metrics_official": {
+        "rmse": 0.05113859,
+        "mae": 0.04768677,
+        "bias": 0.04765769,
+        "ubrmse": 0.01854455,
+        "pearson_r": 0.03676689
+    }
+}

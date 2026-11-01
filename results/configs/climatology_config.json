@@ -1,0 +1,28 @@
+{
+    "model_name": "Mean Climatology Baseline",
+    "paradigm": "Empirical Baseline",
+    "station": "P041",
+    "target_variable": "cosmos_sm_median",
+    "target_units": "m^3/m^3",
+    "split_protocol": "Chronological 80/20 holdout",
+    "train_period": {
+        "start": "2016-01-04",
+        "end": "2016-10-06",
+        "n_dates": 252
+    },
+    "test_period": {
+        "start": "2016-10-07",
+        "end": "2016-12-31",
+        "n_dates": 63
+    },
+    "parameters": {
+        "constant_mean_prediction": 0.125672619047619
+    },
+    "test_metrics_official": {
+        "rmse": 0.04995828,
+        "mae": 0.04646079,
+        "bias": 0.0463869,
+        "ubrmse": 0.01854953,
+        "pearson_r": null
+    }
+}

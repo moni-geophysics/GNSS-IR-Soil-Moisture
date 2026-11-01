@@ -18,14 +18,38 @@ env/
 data/raw/
 data/processed/
 
+# Raw GNSS observations and orbit downloads
+*.16d
+*.16d.Z
+*.16o
+*.16n
+*.16m
+*.Z
+2016/
+
+# Execution logs
+logs/
+
+# Presentation isolation
+Presentation/
+*.pptx
+*.ppt
+
 # Results
-results/
+results/*
+!results/*.md
+!results/configs/
+!results/final_scientific_audit/
+results/figures/
+results/final_scientific_audit/*.png
 
 # OS files
 .DS_Store
 Thumbs.db
+
 # Local GNSS-IR executables
 tools/
 
 # Scratch and local experimental outputs
 scratch/
+research_dossier/

@@ -411,12 +411,23 @@ def fit_reflector_height_least_squares(
         number_of_search_heights,
     )
 
-    sse_values = np.array(
-        [
-            objective(height)
-            for height in height_grid
-        ]
-    )
+    # Fast vectorized grid evaluation (exact analytical least-squares SSE)
+    freqs = 2.0 * height_grid / wavelength_m
+    args = 2.0 * np.pi * freqs[:, None] * x[None, :]
+    c_mat = np.cos(args)
+    s_mat = np.sin(args)
+    sum_c2 = np.sum(c_mat**2, axis=1)
+    sum_s2 = np.sum(s_mat**2, axis=1)
+    sum_cs = np.sum(c_mat * s_mat, axis=1)
+    sum_yc = np.dot(c_mat, detrended_linear)
+    sum_ys = np.dot(s_mat, detrended_linear)
+    det = sum_c2 * sum_s2 - sum_cs**2
+    valid = np.abs(det) > 1e-12
+    sse_values = np.full(len(height_grid), np.inf)
+    if np.any(valid):
+        c_vec = (sum_s2[valid] * sum_yc[valid] - sum_cs[valid] * sum_ys[valid]) / det[valid]
+        s_vec = (sum_c2[valid] * sum_ys[valid] - sum_cs[valid] * sum_yc[valid]) / det[valid]
+        sse_values[valid] = np.sum(detrended_linear**2) - (c_vec * sum_yc[valid] + s_vec * sum_ys[valid])
 
     minimum_index = np.argmin(sse_values)
     grid_best_height_m = float(height_grid[minimum_index])
